@@ -265,21 +265,30 @@ so those calls need `sh -lc`.
 Two host credentials work, and there is no third — see
 [below](#barebones-sandbox-no-credential-yet) for how to arrange either.
 
-| host credential | sandbox receives | wire format |
-|---|---|---|
-| API key — `sbx secret set anthropic` | `ANTHROPIC_API_KEY` sentinel | `x-api-key` |
-| OAuth login — signed in from a `claude` sandbox | OAuth credential file | `Bearer` |
-| none | placeholder unset | reports itself unconfigured |
+| host credential | the token looks like | sandbox receives | wire format |
+|---|---|---|---|
+| API key — `sbx secret set anthropic` | `sk-ant-api…` | `ANTHROPIC_API_KEY=proxy-managed` | `x-api-key` |
+| OAuth login — signed in from a `claude` sandbox | `sk-ant-oat01-…` | a credential file holding `sk-ant-oat01-proxy-managed` | `Bearer` |
+| none | — | placeholder unset | reports itself unconfigured |
 
-**A `claude setup-token` string cannot be used here.** Storing one as a custom
-secret against `api.anthropic.com` looks like it should work — the sandbox
-receives an OAuth-shaped `ANTHROPIC_OAUTH_TOKEN`, and OpenClaw duly sends it as
-`Bearer` — but the request reaches Anthropic without that header, and Anthropic
-answers `authentication_error: x-api-key header is required`. This kit declares
-credentials for `api.anthropic.com`, so the proxy manages auth on that host: it
-carries the OAuth sentinel it issued itself, and drops a bearer it did not.
-What settles it: an obviously invalid bearer token, and no `Authorization`
-header at all, produce byte-identical responses.
+Those `proxy-managed` values are **sentinels**: fixed strings the proxy hands
+the sandbox in place of the real credential, and swaps back out on requests to
+`api.anthropic.com`. So the real token never enters the container. An OAuth
+login is really a pair — the access token above and a `sk-ant-ort01-…` refresh
+token, sentinelled the same way — and the proxy refreshes it on your behalf, so
+neither is yours to handle.
+
+**A `claude setup-token` string cannot be used here** — and note it is a
+genuine `sk-ant-oat01-…` token, indistinguishable by eye from the one the OAuth
+login uses, which is what makes this worth spelling out. Storing one as a
+custom secret against `api.anthropic.com` looks like it should work: the
+sandbox receives an OAuth-shaped `ANTHROPIC_OAUTH_TOKEN`, and OpenClaw duly
+sends it as `Bearer`. But the request reaches Anthropic without that header,
+and Anthropic answers `authentication_error: x-api-key header is required`.
+This kit declares credentials for `api.anthropic.com`, so the proxy manages
+auth on that host: it carries the sentinel it issued itself, and drops a bearer
+it did not. What settles it: an obviously invalid bearer token, and no
+`Authorization` header at all, produce byte-identical responses.
 
 `SBX_CRED_ANTHROPIC_MODE` cannot make this decision on its own: it reports
 `none` for an OAuth login as well as for no credential at all, so the OAuth

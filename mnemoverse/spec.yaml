@@ -1,0 +1,143 @@
+# Docker Sandboxes kit for Mnemoverse, hosted memory for AI agents over MCP.
+# Usage, prerequisites and design notes: see README.md in this directory.
+schemaVersion: "2"
+kind: mixin
+name: mnemoverse
+displayName: Mnemoverse Memory
+# Kept under 100 characters: scripts/kit-meta.sh publishes it as the Docker Hub
+# short description and cuts anything longer.
+description: "Mnemoverse memory for Claude Code over MCP: one memory across AI tools, API key kept on the host."
+sourceURL: https://github.com/mnemoverse/mcp-memory-server
+licenses:
+  - MIT
+
+# The registration step writes Claude Code's own user-level MCP config
+# (`claude mcp add --scope user`) and the agent instructions describe Claude
+# Code's tool loop, so composing this onto a codex or copilot sandbox would
+# give a valid-but-inert result. Affinity turns that into a composition error
+# instead (SPEC-v2 4.3). The server itself runs under any MCP client; other
+# agents need a registration step in their own config format, not covered here.
+requires:
+  agent: claude
+
+credentials:
+  - service: mnemoverse
+    description: Mnemoverse API key (starts with mk_live_; created at console.mnemoverse.com on the free tier, no card). Stored on the host; the sandbox only sees a placeholder and the proxy injects the real value on requests to core.mnemoverse.com.
+    # Without a key the server still starts and lists its tools, but every
+    # tool call is refused, so a sandbox created without a binding would carry
+    # a memory kit that cannot remember anything. Fail at create instead.
+    required: true
+    apiKey:
+      # The server reads MNEMOVERSE_API_KEY and sends it as an `X-Api-Key`
+      # header on every request to MNEMOVERSE_API_URL (src/index.ts in the
+      # server repository; the API answers a missing header with
+      # "Missing API key. Send X-Api-Key header."). Not Bearer.
+      name: MNEMOVERSE_API_KEY
+      # proxyManaged sets MNEMOVERSE_API_KEY to the `proxy-managed` sentinel
+      # inside the container (SPEC-v2 5.4.1); the proxy replaces the header
+      # value with the real key on outbound requests to core.mnemoverse.com
+      # and on no other host.
+      proxyManaged: true
+      inject:
+        - domain: core.mnemoverse.com
+          header: X-Api-Key
+          format: "%s"
+
+permissions:
+  network:
+    allow:
+      # Install-time: `npm install -g` fetches the packument and the tarball
+      # from registry.npmjs.org (the 0.10.1 tarball URL is on that host). The
+      # wildcard follows the claude-mem and kernel kits, which npm-install
+      # under the same deny-all policy.
+      - registry.npmjs.org
+      - '*.npmjs.org'
+      # Runtime: the only host the server talks to, and the inject domain
+      # above (SPEC-v2 5.2 requires every inject domain to appear here too).
+      - core.mnemoverse.com
+      # `requires.agent: claude` composes this mixin onto the built-in claude
+      # kit, which runs its own background `apt-get update` on every sandbox.
+      # Ubuntu hosts amd64 packages on archive/security and arm64 on
+      # ports.ubuntu.com; all three plus Docker's apt repo are listed so the
+      # kit works cross-arch, as in the claude-mem kit.
+      - archive.ubuntu.com
+      - security.ubuntu.com
+      - ports.ubuntu.com
+      - download.docker.com
+      #
+      # Deliberately absent: mcp.mnemoverse.com and auth.mnemoverse.com serve
+      # Mnemoverse's remote MCP endpoint with a browser sign-in, which this
+      # kit does not use (it runs the local stdio server against the REST
+      # API), and console.mnemoverse.com is where the user creates the key on
+      # the host, never reached from inside the sandbox.
+
+environment:
+  variables:
+    # The server's own default, spelled out so the host the key travels to is
+    # visible next to the inject rule above. The server refuses to attach the
+    # key to a plain http:// address that is not loopback.
+    MNEMOVERSE_API_URL: "https://core.mnemoverse.com/api/v1"
+
+agentInstructions:
+  content: |
+    ## Mnemoverse memory
+
+    An MCP server named `mnemoverse` is registered for Claude Code in this
+    sandbox. It is persistent memory hosted by Mnemoverse: what you store
+    here is kept across sessions and is readable from every other tool
+    connected to the same Mnemoverse account. Ten tools: `memory_write`,
+    `memory_read`, `memory_list_recent`, `memory_feedback`, `memory_stats`,
+    `memory_create_room`, `memory_invite_to_room`, `memory_join_room`,
+    `memory_list_rooms`, `vault_list`.
+
+    - Before starting a task, call `memory_read` with a short natural-language
+      query about the project or the user, and act on what comes back.
+    - When you learn a durable fact, decision, preference or lesson, call
+      `memory_write` with it.
+    - After using a recalled memory, call `memory_feedback` to say whether it
+      helped or misled; that changes the order of the next recall.
+    - `MNEMOVERSE_API_KEY` inside this container is a placeholder; the real
+      key is added by the sandbox proxy on the wire. Do not print, copy or
+      try to read it.
+
+setup:
+  install:
+    # Global install from the npm registry, pinned to an exact release. The
+    # server's tool list is frozen per released version (its README, "Tool
+    # surface stability") and nothing outside this kit tracks its version, so
+    # a pin gives reproducible sandboxes at no cost; bump the version here to
+    # move. `npm install -g` rather than `npx` at session start: the download
+    # then happens once, at create time, and starting the server later needs
+    # no registry access. Runs as root because the global prefix is
+    # root-owned, as in the kernel kit; nothing under /home/agent is touched.
+    - command: npm install -g @mnemoverse/mcp-memory-server@0.10.1
+      user: "0"
+      description: Install @mnemoverse/mcp-memory-server 0.10.1 from the npm registry
+    # Registration with Claude Code, at install time so it is race-free: the
+    # claude kit registers its own MCP gateway the same way, because install
+    # commands complete before the interactive session reads its config.
+    # --scope user writes the entry to the user-level config, so it is
+    # visible from every workspace. The binary is registered by absolute path
+    # so the entry does not depend on the agent's PATH at launch. The key is
+    # passed as the sentinel literal, the same value the engine sets in the
+    # container env and the same literal the claude kit writes into
+    # settings.json (`apiKeyHelper: echo proxy-managed`); the proxy swaps it
+    # on the wire. `claude mcp add` exits 1 when the name already exists (the
+    # swap-container path behind `sbx kit add` reruns install commands
+    # against a filesystem that already carries the entry), so `|| true`
+    # keeps a rerun from failing the create, as in the claude kit.
+    - command: |
+        set -e
+        export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+        BIN="$(command -v mcp-memory-server || true)"
+        if [ -z "$BIN" ]; then
+          echo "mnemoverse kit: mcp-memory-server is not on PATH after npm install -g" >&2
+          exit 1
+        fi
+        claude mcp add mnemoverse \
+          --scope user \
+          -e MNEMOVERSE_API_KEY=proxy-managed \
+          -e MNEMOVERSE_API_URL=https://core.mnemoverse.com/api/v1 \
+          -- "$BIN" || true
+      user: "1000"
+      description: Register the Mnemoverse MCP server with Claude Code (user scope, install-time)

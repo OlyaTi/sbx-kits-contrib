@@ -77,11 +77,11 @@ binding would carry a memory kit that cannot remember anything.
 
 ## Design notes
 
-- **Pinned version (`@0.10.1`)**: unlike the `claude-mem` kit, which tracks
-  `@latest` because a marketplace-tracked plugin version must match the
-  installed worker, nothing outside this kit tracks the server's version, and
-  the server freezes its tool list per released version. A pin gives
-  reproducible sandboxes at no cost. Bump the version in `spec.yaml` to move.
+- **Pinned version (`@0.10.1`)**: the repo's style note asks for pinned
+  installs where possible. Nothing outside this kit tracks the server's
+  version, and the server freezes its tool list per released version, so a
+  pin gives reproducible sandboxes at no cost. Bump the version in
+  `spec.yaml` to move.
 - **`npm install -g` at create time, not `npx` at session start**: the
   download happens once, and launching the server later needs no registry
   access. The install runs as root because the global prefix is root-owned
